@@ -15,6 +15,7 @@ import 'services/shizuku_service.dart';
 import 'services/chat_history_service.dart';
 import 'models/chat_message.dart';
 import 'widgets/message_bubble.dart';
+import 'theme/app_theme.dart';
 
 class OverlayApp extends StatefulWidget {
   const OverlayApp({super.key});
@@ -60,7 +61,7 @@ class _OverlayAppState extends State<OverlayApp> {
       ChatMessage(
         role: 'assistant',
         content:
-            'Hi! I am your Private Agent. Ask me to perform any task on your screen.',
+            'Hi! I am CompanAI. Ask me to perform any task on your screen.',
       ),
     );
   }
@@ -362,18 +363,22 @@ class _OverlayAppState extends State<OverlayApp> {
             decoration: BoxDecoration(
               color: Colors.white,
               shape: BoxShape.circle,
+              border: Border.all(
+                color: AppColors.primary.withValues(alpha: 0.3),
+                width: 1.5,
+              ),
               boxShadow: [
                 BoxShadow(
-                  color: Colors.black.withOpacity(0.25),
-                  blurRadius: 8,
+                  color: Colors.black.withValues(alpha: 0.25),
+                  blurRadius: 10,
                   spreadRadius: 1,
-                  offset: const Offset(0, 2),
+                  offset: const Offset(0, 3),
                 ),
               ],
             ),
             padding: const EdgeInsets.all(4),
             child: ClipOval(
-              child: Image.asset('assets/app-logo.png', fit: BoxFit.cover),
+              child: Image.asset('assets/app.png', fit: BoxFit.cover),
             ),
           ),
         ),
@@ -392,14 +397,14 @@ class _OverlayAppState extends State<OverlayApp> {
         height: 360,
         decoration: BoxDecoration(
           color: Colors.white,
-          borderRadius: BorderRadius.circular(24),
-          border: Border.all(color: const Color(0xFFEAEAEA), width: 1),
+          borderRadius: BorderRadius.circular(AppRadii.xl),
+          border: Border.all(color: const Color(0xFFE2E8F0), width: 1.2),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withOpacity(0.15),
-              blurRadius: 12,
+              color: Colors.black.withValues(alpha: 0.18),
+              blurRadius: 16,
               spreadRadius: 2,
-              offset: const Offset(0, 4),
+              offset: const Offset(0, 6),
             ),
           ],
         ),
@@ -410,7 +415,7 @@ class _OverlayAppState extends State<OverlayApp> {
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
               decoration: const BoxDecoration(
                 border: Border(
-                  bottom: BorderSide(color: Color(0xFFF2F2F2), width: 1),
+                  bottom: BorderSide(color: Color(0xFFF1F5F9), width: 1.2),
                 ),
               ),
               child: Row(
@@ -418,19 +423,25 @@ class _OverlayAppState extends State<OverlayApp> {
                 children: [
                   Row(
                     children: [
-                      Image.asset(
-                        'assets/app-logo.png',
-                        width: 18,
-                        height: 18,
-                        fit: BoxFit.contain,
+                      Container(
+                        padding: const EdgeInsets.all(4),
+                        decoration: BoxDecoration(
+                          color: AppColors.primary.withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(AppRadii.xs),
+                        ),
+                        child: const Icon(
+                          Icons.smart_toy_rounded,
+                          color: AppColors.primary,
+                          size: 16,
+                        ),
                       ),
                       const SizedBox(width: 8),
                       const Text(
-                        'Private Agent',
+                        'CompanAI',
                         style: TextStyle(
                           fontSize: 13,
-                          fontWeight: FontWeight.w600,
-                          color: Colors.black87,
+                          fontWeight: FontWeight.w700,
+                          color: Color(0xFF0F172A),
                         ),
                       ),
                     ],
@@ -439,14 +450,14 @@ class _OverlayAppState extends State<OverlayApp> {
                     children: [
                       Semantics(
                         button: true,
-                        label: 'Open PrivateAgent',
+                        label: 'Open CompanAI',
                         child: GestureDetector(
                           onTap: () => unawaited(_openMainApp()),
                           child: const Padding(
-                            padding: EdgeInsets.symmetric(horizontal: 8),
+                            padding: EdgeInsets.symmetric(horizontal: 6),
                             child: Icon(
                               Icons.open_in_new_rounded,
-                              color: Colors.black45,
+                              color: Color(0xFF64748B),
                               size: 18,
                             ),
                           ),
@@ -457,13 +468,13 @@ class _OverlayAppState extends State<OverlayApp> {
                         child: Container(
                           padding: const EdgeInsets.all(4),
                           decoration: const BoxDecoration(
-                            color: Color(0xFFF2F2F5),
+                            color: Color(0xFFF1F5F9),
                             shape: BoxShape.circle,
                           ),
                           child: const Icon(
                             Icons.remove,
-                            color: Colors.black54,
-                            size: 12,
+                            color: Color(0xFF64748B),
+                            size: 14,
                           ),
                         ),
                       ),
@@ -494,10 +505,10 @@ class _OverlayAppState extends State<OverlayApp> {
               decoration: const BoxDecoration(
                 color: Colors.white,
                 border: Border(
-                  top: BorderSide(color: Color(0xFFF2F2F2), width: 1),
+                  top: BorderSide(color: Color(0xFFF1F5F9), width: 1.2),
                 ),
                 borderRadius: BorderRadius.vertical(
-                  bottom: Radius.circular(24),
+                  bottom: Radius.circular(AppRadii.xl),
                 ),
               ),
               child: Row(
@@ -509,13 +520,11 @@ class _OverlayAppState extends State<OverlayApp> {
                         vertical: 2,
                       ),
                       decoration: BoxDecoration(
-                        color: Theme.of(context).colorScheme.surface,
-                        borderRadius: BorderRadius.circular(24),
+                        color: const Color(0xFFF1F5F9),
+                        borderRadius: BorderRadius.circular(AppRadii.full),
                         border: Border.all(
-                          color: Theme.of(
-                            context,
-                          ).colorScheme.onSurface.withValues(alpha: 0.08),
-                          width: 1.2,
+                          color: const Color(0xFFE2E8F0),
+                          width: 1,
                         ),
                       ),
                       child: Row(
@@ -525,15 +534,18 @@ class _OverlayAppState extends State<OverlayApp> {
                               controller: _taskController,
                               style: const TextStyle(
                                 fontSize: 12,
-                                color: Colors.black87,
+                                color: Color(0xFF0F172A),
                               ),
                               decoration: const InputDecoration(
                                 hintText: 'Type a command...',
                                 hintStyle: TextStyle(
                                   fontSize: 11.5,
-                                  color: Colors.grey,
+                                  color: Color(0xFF94A3B8),
                                 ),
                                 border: InputBorder.none,
+                                enabledBorder: InputBorder.none,
+                                focusedBorder: InputBorder.none,
+                                filled: false,
                                 isDense: true,
                                 contentPadding: EdgeInsets.symmetric(
                                   vertical: 6,
@@ -546,10 +558,12 @@ class _OverlayAppState extends State<OverlayApp> {
                             GestureDetector(
                               onTap: _toggleListening,
                               child: Icon(
-                                _isListening ? Icons.mic : Icons.mic_none,
+                                _isListening
+                                    ? Icons.mic_rounded
+                                    : Icons.mic_none_rounded,
                                 color: _isListening
-                                    ? Colors.red
-                                    : Theme.of(context).colorScheme.primary,
+                                    ? AppColors.error
+                                    : AppColors.primary,
                                 size: 16,
                               ),
                             ),
@@ -566,7 +580,9 @@ class _OverlayAppState extends State<OverlayApp> {
                             padding: EdgeInsets.all(6),
                             child: CircularProgressIndicator(
                               strokeWidth: 2,
-                              color: Colors.black,
+                              valueColor: AlwaysStoppedAnimation<Color>(
+                                AppColors.primary,
+                              ),
                             ),
                           ),
                         )
@@ -576,12 +592,12 @@ class _OverlayAppState extends State<OverlayApp> {
                             width: 28,
                             height: 28,
                             decoration: const BoxDecoration(
-                              color: Color(0xFF4F46E5),
+                              color: AppColors.primary,
                               shape: BoxShape.circle,
                             ),
                             child: const Icon(
                               Icons.send_rounded,
-                              color: Colors.white,
+                              color: Color(0xFF0A0D14),
                               size: 14,
                             ),
                           ),
