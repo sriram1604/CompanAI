@@ -32,10 +32,10 @@ The system operates on a continuous feedback loop:
 
 Download the latest APK directly from the [Releases Page](https://github.com/sriram1604/CompanAI/releases).
 
-Choose `app-universal-release.apk` when it is available. It supports ARM64,
+Choose `CompanAI-complete-release.apk` when it is available. It supports ARM64,
 32-bit ARM, and x86_64 devices in one package. If a release only provides split
 APKs, most modern Android phones—including Snapdragon devices—must use
-`app-arm64-v8a-release.apk`.
+`CompanAI-arm64-v8a-release.apk`.
 
 CompanAI supports Android 8.0 (API 26) and newer. Current release builds are
 also checked for Android 15/16's 16 KB native-library alignment requirement.
