@@ -486,8 +486,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               // Segmented Mode Selector
               _buildModeSelector(isDark),
 
-              // API Configuration Notice if needed
-              if (!_aiService.isConfigured) _buildConfigNotice(context, isDark),
+              // AI Engine Mode Pill (Local Offline vs Cloud API)
+              _buildAiModePill(isDark),
+
+              // API Configuration Notice if needed (only in Cloud mode)
+              if (!_aiService.isLocalMode && !_aiService.isConfigured)
+                _buildConfigNotice(context, isDark),
 
               // Chat Content Area
               Expanded(
@@ -516,6 +520,225 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           ),
         ),
       ),
+    );
+  }
+
+  Widget _buildAiModePill(bool isDark) {
+    final isLocal = _aiService.isLocalMode;
+    final modelName = isLocal
+        ? 'Local Navigation'
+        : (_aiService.model.isNotEmpty ? _aiService.model : 'Cloud API');
+
+    return GestureDetector(
+      onTap: () => _showAiModeSheet(context, isDark),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 6),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+        decoration: BoxDecoration(
+          color: isLocal
+              ? (isDark
+                  ? AppColors.success.withValues(alpha: 0.15)
+                  : AppColors.successContainer.withValues(alpha: 0.7))
+              : (isDark
+                  ? AppColors.primary.withValues(alpha: 0.12)
+                  : AppColors.primaryLight.withValues(alpha: 0.1)),
+          borderRadius: BorderRadius.circular(AppRadii.full),
+          border: Border.all(
+            color: isLocal
+                ? AppColors.success.withValues(alpha: 0.35)
+                : (isDark
+                    ? AppColors.primary.withValues(alpha: 0.3)
+                    : AppColors.primaryLight.withValues(alpha: 0.3)),
+            width: 1,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              isLocal ? Icons.offline_bolt_rounded : Icons.cloud_outlined,
+              size: 13,
+              color: isLocal
+                  ? AppColors.success
+                  : (isDark ? AppColors.primary : AppColors.primaryLight),
+            ),
+            const SizedBox(width: 6),
+            Text(
+              isLocal ? '⚡ Local AI • On-Device (0 Tokens)' : '☁️ Cloud API • $modelName',
+              style: TextStyle(
+                fontSize: 11.5,
+                fontWeight: FontWeight.w700,
+                color: isLocal
+                    ? (isDark ? AppColors.success : const Color(0xFF15803D))
+                    : (isDark ? AppColors.primary : AppColors.primaryLight),
+              ),
+            ),
+            const SizedBox(width: 4),
+            Icon(
+              Icons.keyboard_arrow_down_rounded,
+              size: 14,
+              color: isLocal
+                  ? (isDark ? AppColors.success : const Color(0xFF15803D))
+                  : (isDark ? AppColors.primary : AppColors.primaryLight),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showAiModeSheet(BuildContext context, bool isDark) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: isDark ? AppColors.darkSurfaceElevated : AppColors.lightSurface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(AppRadii.xl)),
+      ),
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (context, setSheetState) {
+            final isLocal = _aiService.isLocalMode;
+
+            return Padding(
+              padding: const EdgeInsets.fromLTRB(20, 16, 20, 28),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Center(
+                    child: Container(
+                      width: 40,
+                      height: 4,
+                      decoration: BoxDecoration(
+                        color: isDark ? AppColors.darkBorder : AppColors.lightBorder,
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 18),
+                  Text(
+                    'Select AI Engine',
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w800,
+                      color: isDark ? AppColors.darkTextPrimary : AppColors.lightTextPrimary,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    'Choose between private on-device local execution or cloud LLM APIs.',
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      color: isDark ? AppColors.darkTextSecondary : AppColors.lightTextSecondary,
+                    ),
+                  ),
+                  const SizedBox(height: 18),
+
+                  // Option 1: Cloud API Mode
+                  ListTile(
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(AppRadii.md),
+                      side: BorderSide(
+                        color: !isLocal
+                            ? (isDark ? AppColors.primary : AppColors.primaryLight)
+                            : (isDark ? AppColors.darkBorder : AppColors.lightBorder),
+                        width: !isLocal ? 1.8 : 1,
+                      ),
+                    ),
+                    tileColor: !isLocal
+                        ? (isDark ? AppColors.primary.withValues(alpha: 0.1) : AppColors.primaryLight.withValues(alpha: 0.08))
+                        : Colors.transparent,
+                    leading: Icon(
+                      Icons.cloud_outlined,
+                      color: !isLocal ? (isDark ? AppColors.primary : AppColors.primaryLight) : (isDark ? AppColors.darkTextSecondary : AppColors.lightTextSecondary),
+                    ),
+                    title: Text(
+                      'API / Cloud AI',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w700,
+                        fontSize: 14,
+                        color: isDark ? AppColors.darkTextPrimary : AppColors.lightTextPrimary,
+                      ),
+                    ),
+                    subtitle: Text(
+                      'OpenRouter, Gemini, DeepSeek, NVIDIA NIM (Uses API Tokens)',
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        color: isDark ? AppColors.darkTextMuted : AppColors.lightTextMuted,
+                      ),
+                    ),
+                    trailing: !isLocal
+                        ? Icon(Icons.check_circle_rounded, color: isDark ? AppColors.primary : AppColors.primaryLight)
+                        : null,
+                    onTap: () async {
+                      await _aiService.setMode(AiMode.cloud);
+                      if (mounted) setState(() {});
+                      Navigator.pop(ctx);
+                    },
+                  ),
+                  const SizedBox(height: 10),
+
+                  // Option 2: Local Navigation AI
+                  ListTile(
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(AppRadii.md),
+                      side: BorderSide(
+                        color: isLocal
+                            ? AppColors.success
+                            : (isDark ? AppColors.darkBorder : AppColors.lightBorder),
+                        width: isLocal ? 1.8 : 1,
+                      ),
+                    ),
+                    tileColor: isLocal
+                        ? (isDark ? AppColors.success.withValues(alpha: 0.1) : AppColors.successContainer.withValues(alpha: 0.5))
+                        : Colors.transparent,
+                    leading: const Icon(
+                      Icons.offline_bolt_rounded,
+                      color: AppColors.success,
+                    ),
+                    title: const Row(
+                      children: [
+                        Text(
+                          'Local Navigation AI',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w700,
+                            fontSize: 14,
+                          ),
+                        ),
+                        SizedBox(width: 8),
+                        Text(
+                          '100% OFFLINE',
+                          style: TextStyle(
+                            fontSize: 9.5,
+                            fontWeight: FontWeight.w800,
+                            color: AppColors.success,
+                            letterSpacing: 0.6,
+                          ),
+                        ),
+                      ],
+                    ),
+                    subtitle: Text(
+                      'Runs directly on your phone. 0 Cloud tokens, 100% private, works offline.',
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        color: isDark ? AppColors.darkTextMuted : AppColors.lightTextMuted,
+                      ),
+                    ),
+                    trailing: isLocal
+                        ? const Icon(Icons.check_circle_rounded, color: AppColors.success)
+                        : null,
+                    onTap: () async {
+                      await _aiService.setMode(AiMode.local);
+                      if (mounted) setState(() {});
+                      Navigator.pop(ctx);
+                    },
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
     );
   }
 
@@ -780,19 +1003,26 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       greeting = 'Good evening.';
     }
 
-    final suggestions = _mode == 'chat'
+    final suggestions = _aiService.isLocalMode
         ? [
-            ('Write a concise email summary', Icons.mail_outline_rounded),
-            ('Explain how LLM agents work', Icons.psychology_outlined),
-            ('Generate ideas for productivity', Icons.lightbulb_outline_rounded),
-            ('Draft a daily workout routine', Icons.fitness_center_outlined),
+            ('Add Team Sync to Calendar tomorrow at 10 AM', Icons.event_available_rounded),
+            ('Remind me to take a break every 2 hours', Icons.alarm_rounded),
+            ('Send WhatsApp message to Alex saying hello', Icons.chat_rounded),
+            ('Open Settings and set media volume to 80%', Icons.settings_accessibility_rounded),
           ]
-        : [
-            ('Open YouTube and search for tech news', Icons.play_circle_outline_rounded),
-            ('Call Mom on speaker', Icons.phone_in_talk_outlined),
-            ('Set media volume to 80%', Icons.volume_up_outlined),
-            ('Describe what is on my screen', Icons.visibility_outlined),
-          ];
+        : _mode == 'chat'
+            ? [
+                ('Write a concise email summary', Icons.mail_outline_rounded),
+                ('Explain how LLM agents work', Icons.psychology_outlined),
+                ('Generate ideas for productivity', Icons.lightbulb_outline_rounded),
+                ('Draft a daily workout routine', Icons.fitness_center_outlined),
+              ]
+            : [
+                ('Open YouTube and search for tech news', Icons.play_circle_outline_rounded),
+                ('Call Mom on speaker', Icons.phone_in_talk_outlined),
+                ('Set media volume to 80%', Icons.volume_up_outlined),
+                ('Describe what is on my screen', Icons.visibility_outlined),
+              ];
 
     return SingleChildScrollView(
       physics: const BouncingScrollPhysics(),
@@ -1402,6 +1632,38 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                 Navigator.push(
                   context,
                   MaterialPageRoute(builder: (_) => const TaskHistoryScreen()),
+                );
+              },
+            ),
+            ListTile(
+              horizontalTitleGap: 12,
+              leading: const Icon(
+                Icons.offline_bolt_rounded,
+                color: AppColors.success,
+                size: 20,
+              ),
+              title: Text(
+                'Local AI & Reminders',
+                style: TextStyle(
+                  fontWeight: FontWeight.w600,
+                  fontSize: 13.5,
+                  color: isDark
+                      ? AppColors.darkTextPrimary
+                      : AppColors.lightTextPrimary,
+                ),
+              ),
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => SettingsScreen(
+                      aiService: _aiService,
+                      shizukuService: _actionHandler.shizuku,
+                      screenAutomationService: _actionHandler.screenAutomation,
+                      telegramService: _telegramService,
+                    ),
+                  ),
                 );
               },
             ),

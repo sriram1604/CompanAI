@@ -1,7 +1,9 @@
+import 'package:url_launcher/url_launcher.dart';
 import '../models/agent_action.dart';
 import '../models/chat_message.dart';
 import 'app_launcher_service.dart';
 import 'contacts_service.dart';
+import 'contact_resolver_service.dart';
 import 'communication_service.dart';
 import 'alarm_service.dart';
 import 'system_control_service.dart';
@@ -9,18 +11,28 @@ import 'shizuku_service.dart';
 import 'screen_automation_service.dart';
 import 'task_executor.dart';
 import 'ai_service.dart';
+import 'calendar_service.dart';
+import 'reminder_scheduler_service.dart';
+import 'messaging_service.dart';
+import 'product_comparison_engine.dart';
 
 class ActionHandler {
   final AppLauncherService _appLauncher = AppLauncherService();
   final ContactsService _contacts = ContactsService();
+  final ContactResolverService _resolver = ContactResolverService();
   final CommunicationService _communication = CommunicationService();
   final AlarmService _alarm = AlarmService();
   final SystemControlService _systemControl = SystemControlService();
   final ShizukuService _shizuku = ShizukuService();
   final ScreenAutomationService _screenAutomation = ScreenAutomationService();
+  final CalendarService _calendar = CalendarService();
+  final ReminderSchedulerService _scheduler = ReminderSchedulerService();
+  final MessagingService _messaging = MessagingService();
+  final ProductComparisonEngine _productEngine = ProductComparisonEngine();
 
   ShizukuService get shizuku => _shizuku;
   ScreenAutomationService get screenAutomation => _screenAutomation;
+  ReminderSchedulerService get scheduler => _scheduler;
 
   /// The currently running task executor, if any
   TaskExecutor? _currentExecutor;
@@ -37,7 +49,7 @@ class ActionHandler {
       switch (action.action) {
         case 'open_app':
           result = await _appLauncher.openApp(
-            action.params['app_name'] as String? ?? '',
+            action.params['app_name'] as String? ?? action.params['package_name'] as String? ?? '',
           );
           break;
 
@@ -47,10 +59,29 @@ class ActionHandler {
           break;
 
         case 'make_call':
-          result = await _communication.makeCall(
-            contactName: action.params['contact_name'] as String?,
-            phoneNumber: action.params['phone_number'] as String?,
-          );
+          final contactName = action.params['contact_name'] as String? ?? action.params['contact'] as String?;
+          final phoneNumber = action.params['phone_number'] as String?;
+          if (contactName != null && phoneNumber == null) {
+            final resolution = await _resolver.resolveContact(contactName);
+            if (resolution.isSingleMatch && resolution.primaryMatch?.primaryPhoneNumber != null) {
+              result = await _communication.makeCall(
+                contactName: resolution.primaryMatch!.displayName,
+                phoneNumber: resolution.primaryMatch!.primaryPhoneNumber,
+              );
+            } else if (resolution.isAmbiguous) {
+              final candidateList = resolution.candidateMatches
+                  .map((c) => '• ${c.displayName}: ${c.primaryPhoneNumber ?? "No number"}')
+                  .join('\n');
+              result = 'Multiple contacts matched "$contactName":\n$candidateList\nPlease specify which one to call.';
+            } else {
+              result = resolution.message;
+            }
+          } else {
+            result = await _communication.makeCall(
+              contactName: contactName,
+              phoneNumber: phoneNumber,
+            );
+          }
           break;
 
         case 'send_sms':
@@ -114,8 +145,93 @@ class ActionHandler {
           );
           break;
 
-        // ─── Screen Automation Actions ────────────────────────
+        // ─── Search & Navigation ──────────────────────────────
+        case 'search':
+          final app = (action.params['app'] as String? ?? 'browser').toLowerCase();
+          final query = action.params['query'] as String? ?? '';
+          if (app.contains('youtube')) {
+            final uri = Uri.parse('vnd.youtube://results?search_query=${Uri.encodeComponent(query)}');
+            if (await canLaunchUrl(uri)) {
+              await launchUrl(uri);
+              result = 'Searching YouTube for "$query"';
+            } else {
+              result = await _appLauncher.openUrl('https://www.youtube.com/results?search_query=${Uri.encodeComponent(query)}');
+            }
+          } else {
+            result = await _appLauncher.openUrl('https://www.google.com/search?q=${Uri.encodeComponent(query)}');
+          }
+          break;
 
+        // ─── Product Search & Cross-Site Comparison ───────────
+        case 'search_product':
+        case 'compare_products':
+          final query = action.params['query'] as String? ?? '';
+          final sites = (action.params['sites'] as List?)?.map((s) => s.toString()).toList();
+          result = await _productEngine.searchAndCompareProducts(
+            query: query,
+            targetSites: sites,
+            onProgress: onProgress,
+          );
+          break;
+
+        // ─── Deterministic Calendar & Reminder Actions ────────
+        case 'create_calendar_event':
+          final title = action.params['title'] as String? ?? 'Event';
+          final startTimeStr = action.params['start_time'] as String?;
+          final endTimeStr = action.params['end_time'] as String?;
+          final location = action.params['location'] as String?;
+          final description = action.params['description'] as String?;
+          final allDay = action.params['all_day'] as bool? ?? false;
+
+          final startTime = startTimeStr != null
+              ? DateTime.tryParse(startTimeStr) ?? DateTime.now().add(const Duration(hours: 1))
+              : DateTime.now().add(const Duration(hours: 1));
+          final endTime = endTimeStr != null ? DateTime.tryParse(endTimeStr) : null;
+
+          result = await _calendar.createEvent(
+            title: title,
+            startTime: startTime,
+            endTime: endTime,
+            location: location,
+            description: description,
+            allDay: allDay,
+          );
+          break;
+
+        case 'set_reminder':
+        case 'schedule_job':
+          final title = action.params['title'] as String? ?? 'Reminder';
+          final scheduledTimeStr = action.params['scheduled_time'] as String?;
+          final repeat = action.params['repeat'] as String? ?? 'none';
+          final message = action.params['message'] as String?;
+          final taskPrompt = action.params['task_prompt'] as String?;
+
+          final scheduledTime = scheduledTimeStr != null
+              ? DateTime.tryParse(scheduledTimeStr) ?? DateTime.now().add(const Duration(minutes: 30))
+              : DateTime.now().add(const Duration(minutes: 30));
+
+          result = await _scheduler.scheduleReminder(
+            title: title,
+            scheduledTime: scheduledTime,
+            repeatType: repeat,
+            message: message,
+            taskPrompt: taskPrompt,
+          );
+          break;
+
+        case 'send_message':
+          final app = action.params['app'] as String? ?? 'WhatsApp';
+          final recipient = action.params['recipient'] as String? ?? action.params['target'] as String? ?? '';
+          final message = action.params['message'] as String? ?? '';
+
+          result = await _messaging.sendMessage(
+            app: app,
+            recipient: recipient,
+            message: message,
+          );
+          break;
+
+        // ─── Screen Automation Actions ────────────────────────
         case 'read_screen':
           result = await _screenAutomation.getScreenDescription();
           break;
@@ -145,7 +261,6 @@ class ActionHandler {
           break;
 
         // ─── Multi-Step Task Execution ────────────────────────
-
         case 'execute_task':
           final goal = action.params['goal'] as String? ?? action.response;
           if (aiService == null) {

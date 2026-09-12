@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -6,6 +7,10 @@ import '../services/ai_service.dart';
 import '../services/shizuku_service.dart';
 import '../services/screen_automation_service.dart';
 import '../services/telegram_service.dart';
+import '../services/local_ai/local_model_info.dart';
+import '../services/local_ai/local_model_manager.dart';
+import '../services/local_ai/local_inference_engine.dart';
+import '../services/reminder_scheduler_service.dart';
 import 'task_history_screen.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter_overlay_window/flutter_overlay_window.dart';
@@ -48,12 +53,29 @@ class _SettingsScreenState extends State<SettingsScreen>
   bool _floatingIconEnabled = false;
   bool _isOverlayPermissionGranted = false;
 
+  // Local AI State
+  late AiMode _aiMode;
+  late LocalModelInfo _selectedLocalModel;
+  LocalModelStatus _localModelStatus = LocalModelStatus.notDownloaded;
+  DownloadProgress _downloadProgress = const DownloadProgress(
+    progress: 0.0,
+    bytesDownloaded: 0,
+    totalBytes: 0,
+  );
+  StreamSubscription<DownloadProgress>? _downloadSub;
+  bool _isTestingLocalModel = false;
+  List<ScheduledJob> _scheduledJobs = [];
+  String _callConfirmation = 'ambiguous'; // 'always', 'ambiguous', 'automatic'
+  String _messageConfirmation = 'automatic'; // 'always', 'ambiguous', 'automatic'
+
   final Map<String, PermissionStatus> _permissions = {};
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _aiMode = widget.aiService.mode;
+    _selectedLocalModel = LocalModelInfo.getDefaultModel();
     _apiKeyController = TextEditingController(text: widget.aiService.apiKey);
     _baseUrlController = TextEditingController(text: widget.aiService.baseUrl);
     _modelController = TextEditingController(text: widget.aiService.model);
@@ -81,6 +103,238 @@ class _SettingsScreenState extends State<SettingsScreen>
     if (FeatureFlags.floatingOverlayEnabled) {
       _checkOverlayStatus();
     }
+    _initLocalModel();
+    _loadScheduledJobs();
+  }
+
+  Future<void> _initLocalModel() async {
+    final active = await widget.aiService.localModelManager.getActiveModel();
+    final status =
+        await widget.aiService.localModelManager.getModelStatus(active);
+    if (mounted) {
+      setState(() {
+        _selectedLocalModel = active;
+        _localModelStatus = status;
+      });
+    }
+    _downloadSub = widget.aiService.localModelManager.downloadProgressStream
+        .listen((prog) {
+      if (mounted) {
+        setState(() {
+          _downloadProgress = prog;
+          if (prog.progress >= 1.0) {
+            _localModelStatus = LocalModelStatus.ready;
+          } else if (prog.progress > 0) {
+            _localModelStatus = LocalModelStatus.downloading;
+          }
+        });
+      }
+    });
+  }
+
+  Future<void> _loadScheduledJobs() async {
+    final jobs = await ReminderSchedulerService().getAllJobs();
+    final prefs = await SharedPreferences.getInstance();
+    final callPol = prefs.getString('call_confirmation_policy') ?? 'ambiguous';
+    final msgPol = prefs.getString('message_confirmation_policy') ?? 'automatic';
+    if (mounted) {
+      setState(() {
+        _scheduledJobs = jobs;
+        _callConfirmation = callPol;
+        _messageConfirmation = msgPol;
+      });
+    }
+  }
+
+  Future<void> _downloadModel() async {
+    setState(() {
+      _localModelStatus = LocalModelStatus.downloading;
+    });
+    try {
+      final success = await widget.aiService.localModelManager.downloadModel(
+        _selectedLocalModel,
+        onProgress: (prog) {
+          if (mounted) setState(() => _downloadProgress = prog);
+        },
+      );
+      if (mounted) {
+        setState(() {
+          _localModelStatus = success
+              ? LocalModelStatus.ready
+              : LocalModelStatus.notDownloaded;
+        });
+        if (success) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                'Model ${_selectedLocalModel.name} is ready for on-device navigation!',
+              ),
+              backgroundColor: AppColors.success,
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        final isCancelled = e is DownloadCancelledException ||
+            e.toString().toLowerCase().contains('cancelled');
+        setState(() => _localModelStatus = LocalModelStatus.notDownloaded);
+
+        final isDark = Theme.of(context).brightness == Brightness.dark;
+        if (isCancelled) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: const Row(
+                children: [
+                  Icon(Icons.info_outline_rounded, color: Colors.white, size: 18),
+                  SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'Download cancelled. Partial files removed from storage.',
+                      style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+                    ),
+                  ),
+                ],
+              ),
+              backgroundColor: isDark
+                  ? AppColors.darkSurfaceElevated
+                  : const Color(0xFF334155),
+              behavior: SnackBarBehavior.floating,
+              duration: const Duration(seconds: 3),
+            ),
+          );
+        } else {
+          String cleanError = e.toString().replaceFirst('Exception: ', '');
+          if (cleanError.contains('uri=')) {
+            cleanError = cleanError.split('uri=').first.trim();
+          }
+          if (cleanError.isEmpty) {
+            cleanError = 'Connection failed. Please check your internet connection.';
+          }
+
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Download failed: $cleanError'),
+              backgroundColor: AppColors.error,
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
+      }
+    }
+  }
+
+  Future<void> _deleteModel() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete Local Model?'),
+        content: Text(
+          'Delete "${_selectedLocalModel.name}" (${_selectedLocalModel.formattedSize}) from device storage?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.error),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      await widget.aiService.localModelManager.deleteModel(_selectedLocalModel);
+      await widget.aiService.localEngine.unloadModel();
+      setState(() {
+        _localModelStatus = LocalModelStatus.notDownloaded;
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Model deleted from storage.')),
+        );
+      }
+    }
+  }
+
+  Future<void> _testLocalModel() async {
+    setState(() => _isTestingLocalModel = true);
+    try {
+      final result = await widget.aiService.localEngine.testInference();
+      if (!mounted) return;
+      setState(() => _isTestingLocalModel = false);
+
+      final isDark = Theme.of(context).brightness == Brightness.dark;
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor:
+              isDark ? AppColors.darkSurface : AppColors.lightSurface,
+          title: Row(
+            children: [
+              Icon(
+                result['success'] == true
+                    ? Icons.check_circle_rounded
+                    : Icons.error_rounded,
+                color: result['success'] == true
+                    ? AppColors.success
+                    : AppColors.error,
+              ),
+              const SizedBox(width: 8),
+              const Text('Local Model Test'),
+            ],
+          ),
+          content: result['success'] == true
+              ? Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Model: ${result['modelName']}',
+                        style: const TextStyle(fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 6),
+                    Text('Latency: ${result['latencyMs']} ms'),
+                    Text('Speed: ${result['tokensPerSec']} tokens/sec'),
+                    const SizedBox(height: 10),
+                    const Text('Sample Structured Output:',
+                        style: TextStyle(fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 4),
+                    Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: isDark
+                            ? AppColors.darkSurfaceElevated
+                            : AppColors.lightSurfaceHighlight,
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Text(
+                        result['sampleOutput'] ?? '',
+                        style: const TextStyle(
+                            fontFamily: 'monospace', fontSize: 11),
+                      ),
+                    ),
+                  ],
+                )
+              : Text('Test Error: ${result['error']}'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Close'),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isTestingLocalModel = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Test error: $e')),
+        );
+      }
+    }
   }
 
   Future<void> _checkOverlayStatus() async {
@@ -97,6 +351,7 @@ class _SettingsScreenState extends State<SettingsScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _downloadSub?.cancel();
     _apiKeyController.removeListener(_autoSave);
     _baseUrlController.removeListener(_autoSave);
     _modelController.removeListener(_autoSave);
@@ -167,6 +422,11 @@ class _SettingsScreenState extends State<SettingsScreen>
       useScreenCompression: _useScreenCompression,
       useSystemPrompt: _useSystemPrompt,
     );
+
+    SharedPreferences.getInstance().then((prefs) {
+      prefs.setString('call_confirmation_policy', _callConfirmation);
+      prefs.setString('message_confirmation_policy', _messageConfirmation);
+    });
   }
 
   Future<void> _fetchModels() async {
@@ -411,18 +671,22 @@ class _SettingsScreenState extends State<SettingsScreen>
               ],
             ),
 
-            // 2. AI Engine Configuration Card
-            _buildSettingsCard(
-              icon: Icons.psychology_outlined,
-              title: 'AI Engine Configuration',
-              subtitle: 'Supports any OpenAI-compatible API endpoint',
-              isDark: isDark,
-              children: [
-                TextField(
-                  controller: _apiKeyController,
-                  obscureText: _obscureKey,
-                  decoration: InputDecoration(
-                    labelText: 'API Key',
+            // 2. AI Mode Selector Card
+            _buildAiModeSelectorCard(isDark),
+
+            // 3. AI Engine Configuration Card (Cloud Mode Only)
+            if (_aiMode == AiMode.cloud)
+              _buildSettingsCard(
+                icon: Icons.psychology_outlined,
+                title: 'AI Engine Configuration',
+                subtitle: 'Supports any OpenAI-compatible API endpoint',
+                isDark: isDark,
+                children: [
+                  TextField(
+                    controller: _apiKeyController,
+                    obscureText: _obscureKey,
+                    decoration: InputDecoration(
+                      labelText: 'API Key',
                     hintText: 'sk-...',
                     prefixIcon: const Icon(Icons.key_rounded, size: 18),
                     suffixIcon: IconButton(
@@ -588,6 +852,9 @@ class _SettingsScreenState extends State<SettingsScreen>
                 ),
               ],
             ),
+
+            if (_aiMode == AiMode.local)
+              _buildLocalNavigationCard(isDark),
 
             // 3. Parameters & Tuning Card
             _buildSettingsCard(
@@ -836,7 +1103,13 @@ class _SettingsScreenState extends State<SettingsScreen>
               ],
             ),
 
-            // 6. Screen Control & Accessibility
+            // 6. Scheduled Reminders & Background Jobs
+            _buildScheduledRemindersCard(isDark),
+
+            // 7. Action Confirmation Policies
+            _buildConfirmationPolicyCard(isDark),
+
+            // 8. Screen Control & Accessibility
             _buildSettingsCard(
               icon: Icons.visibility_outlined,
               title: 'Screen Control (Accessibility)',
@@ -971,37 +1244,37 @@ class _SettingsScreenState extends State<SettingsScreen>
                 const SizedBox(height: 12),
 
                 // GitHub Link
-                ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  leading: Container(
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: (isDark ? AppColors.primary : AppColors.primaryLight)
-                          .withValues(alpha: 0.1),
-                      borderRadius: BorderRadius.circular(AppRadii.sm),
-                    ),
-                    child: Icon(
-                      Icons.code_rounded,
-                      size: 20,
-                      color: isDark ? AppColors.primary : AppColors.primaryLight,
-                    ),
-                  ),
-                  title: const Text(
-                    'GitHub Repository',
-                    style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13.5),
-                  ),
-                  subtitle: const Text(
-                    'Source code, issues & releases',
-                    style: TextStyle(fontSize: 11.5),
-                  ),
-                  trailing: const Icon(Icons.open_in_new_rounded, size: 16),
-                  onTap: () {
-                    launchUrl(
-                      Uri.parse('https://github.com/sriram1604/CompanAI'),
-                      mode: LaunchMode.externalApplication,
-                    );
-                  },
-                ),
+                // ListTile(
+                //   contentPadding: EdgeInsets.zero,
+                //   leading: Container(
+                //     padding: const EdgeInsets.all(8),
+                //     decoration: BoxDecoration(
+                //       color: (isDark ? AppColors.primary : AppColors.primaryLight)
+                //           .withValues(alpha: 0.1),
+                //       borderRadius: BorderRadius.circular(AppRadii.sm),
+                //     ),
+                //     child: Icon(
+                //       Icons.code_rounded,
+                //       size: 20,
+                //       color: isDark ? AppColors.primary : AppColors.primaryLight,
+                //     ),
+                //   ),
+                //   title: const Text(
+                //     'GitHub Repository',
+                //     style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13.5),
+                //   ),
+                //   subtitle: const Text(
+                //     'Source code, issues & releases',
+                //     style: TextStyle(fontSize: 11.5),
+                //   ),
+                //   trailing: const Icon(Icons.open_in_new_rounded, size: 16),
+                //   onTap: () {
+                //     launchUrl(
+                //       Uri.parse('https://github.com/sriram1604/CompanAI'),
+                //       mode: LaunchMode.externalApplication,
+                //     );
+                //   },
+                // ),
                 Divider(
                   height: 1,
                   color: isDark ? AppColors.darkBorder : AppColors.lightBorder,
@@ -1324,4 +1597,708 @@ class _SettingsScreenState extends State<SettingsScreen>
       },
     );
   }
+
+  Widget _buildAiModeSelectorCard(bool isDark) {
+    return _buildSettingsCard(
+      icon: Icons.hub_outlined,
+      title: 'AI Operation Mode',
+      subtitle: 'Switch between Cloud APIs and on-device Local Navigation AI',
+      isDark: isDark,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: InkWell(
+                onTap: () {
+                  setState(() => _aiMode = AiMode.cloud);
+                  widget.aiService.setMode(AiMode.cloud);
+                },
+                borderRadius: BorderRadius.circular(AppRadii.md),
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+                  decoration: BoxDecoration(
+                    color: _aiMode == AiMode.cloud
+                        ? (isDark ? AppColors.primary : AppColors.primaryLight)
+                            .withValues(alpha: 0.15)
+                        : (isDark
+                            ? AppColors.darkSurface
+                            : AppColors.lightSurfaceHighlight),
+                    borderRadius: BorderRadius.circular(AppRadii.md),
+                    border: Border.all(
+                      color: _aiMode == AiMode.cloud
+                          ? (isDark ? AppColors.primary : AppColors.primaryLight)
+                          : (isDark
+                              ? AppColors.darkBorder
+                              : AppColors.lightBorder),
+                      width: _aiMode == AiMode.cloud ? 2 : 1,
+                    ),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Icon(
+                            Icons.cloud_queue_rounded,
+                            size: 18,
+                            color: _aiMode == AiMode.cloud
+                                ? (isDark
+                                    ? AppColors.primary
+                                    : AppColors.primaryLight)
+                                : (isDark
+                                    ? AppColors.darkTextSecondary
+                                    : AppColors.lightTextSecondary),
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            'API / Cloud',
+                            style: TextStyle(
+                              fontWeight: FontWeight.w800,
+                              fontSize: 13.5,
+                              color: _aiMode == AiMode.cloud
+                                  ? (isDark
+                                      ? AppColors.primary
+                                      : AppColors.primaryLight)
+                                  : (isDark
+                                      ? AppColors.darkTextPrimary
+                                      : AppColors.lightTextPrimary),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        'Gemini, DeepSeek, NVIDIA, Groq, custom API keys',
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: isDark
+                              ? AppColors.darkTextSecondary
+                              : AppColors.lightTextSecondary,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: InkWell(
+                onTap: () {
+                  setState(() => _aiMode = AiMode.local);
+                  widget.aiService.setMode(AiMode.local);
+                },
+                borderRadius: BorderRadius.circular(AppRadii.md),
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+                  decoration: BoxDecoration(
+                    color: _aiMode == AiMode.local
+                        ? (isDark ? AppColors.primary : AppColors.primaryLight)
+                            .withValues(alpha: 0.15)
+                        : (isDark
+                            ? AppColors.darkSurface
+                            : AppColors.lightSurfaceHighlight),
+                    borderRadius: BorderRadius.circular(AppRadii.md),
+                    border: Border.all(
+                      color: _aiMode == AiMode.local
+                          ? (isDark ? AppColors.primary : AppColors.primaryLight)
+                          : (isDark
+                              ? AppColors.darkBorder
+                              : AppColors.lightBorder),
+                      width: _aiMode == AiMode.local ? 2 : 1,
+                    ),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Icon(
+                            Icons.phone_android_rounded,
+                            size: 18,
+                            color: _aiMode == AiMode.local
+                                ? (isDark
+                                    ? AppColors.primary
+                                    : AppColors.primaryLight)
+                                : (isDark
+                                    ? AppColors.darkTextSecondary
+                                    : AppColors.lightTextSecondary),
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            'Local AI',
+                            style: TextStyle(
+                              fontWeight: FontWeight.w800,
+                              fontSize: 13.5,
+                              color: _aiMode == AiMode.local
+                                  ? (isDark
+                                      ? AppColors.primary
+                                      : AppColors.primaryLight)
+                                  : (isDark
+                                      ? AppColors.darkTextPrimary
+                                      : AppColors.lightTextPrimary),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        'On-device SLM • No API key • 100% Offline • Private',
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: isDark
+                              ? AppColors.darkTextSecondary
+                              : AppColors.lightTextSecondary,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildLocalNavigationCard(bool isDark) {
+    final statusColor = _localModelStatus == LocalModelStatus.ready
+        ? AppColors.success
+        : (_localModelStatus == LocalModelStatus.downloading
+            ? (isDark ? AppColors.primary : AppColors.primaryLight)
+            : AppColors.warning);
+
+    final statusText = _localModelStatus == LocalModelStatus.ready
+        ? 'Ready'
+        : (_localModelStatus == LocalModelStatus.downloading
+            ? 'Downloading (${(_downloadProgress.progress * 100).toStringAsFixed(0)}%)'
+            : (_localModelStatus == LocalModelStatus.error
+                ? 'Download Error'
+                : 'Model Not Downloaded'));
+
+    return _buildSettingsCard(
+      icon: Icons.offline_bolt_outlined,
+      title: 'Local Navigation AI',
+      subtitle: 'On-device model for task planning, navigation & reminders',
+      isDark: isDark,
+      children: [
+        // Status Row
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          decoration: BoxDecoration(
+            color: statusColor.withValues(alpha: 0.12),
+            borderRadius: BorderRadius.circular(AppRadii.md),
+            border: Border.all(color: statusColor.withValues(alpha: 0.3)),
+          ),
+          child: Row(
+            children: [
+              Icon(
+                _localModelStatus == LocalModelStatus.ready
+                    ? Icons.check_circle_rounded
+                    : (_localModelStatus == LocalModelStatus.downloading
+                        ? Icons.downloading_rounded
+                        : Icons.info_outline_rounded),
+                color: statusColor,
+                size: 20,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Status: $statusText',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w700,
+                        fontSize: 13,
+                        color: isDark
+                            ? AppColors.darkTextPrimary
+                            : AppColors.lightTextPrimary,
+                      ),
+                    ),
+                    Text(
+                      'Selected: ${_selectedLocalModel.name} (${_selectedLocalModel.formattedSize})',
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        color: isDark
+                            ? AppColors.darkTextSecondary
+                            : AppColors.lightTextSecondary,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 14),
+
+        // Model Selector
+        Text(
+          'Choose Local Model',
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w700,
+            color: isDark
+                ? AppColors.darkTextSecondary
+                : AppColors.lightTextSecondary,
+          ),
+        ),
+        const SizedBox(height: 8),
+        ...LocalModelInfo.availableModels.map((m) {
+          final isSelected = _selectedLocalModel.id == m.id;
+          return Container(
+            margin: const EdgeInsets.only(bottom: 8),
+            decoration: BoxDecoration(
+              color: isSelected
+                  ? (isDark ? AppColors.primary : AppColors.primaryLight)
+                      .withValues(alpha: 0.12)
+                  : (isDark
+                      ? AppColors.darkSurface
+                      : AppColors.lightSurfaceElevated),
+              borderRadius: BorderRadius.circular(AppRadii.md),
+              border: Border.all(
+                color: isSelected
+                    ? (isDark ? AppColors.primary : AppColors.primaryLight)
+                    : (isDark ? AppColors.darkBorder : AppColors.lightBorder),
+                width: isSelected ? 1.5 : 1,
+              ),
+            ),
+            child: ListTile(
+              contentPadding:
+                  const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+              dense: true,
+              title: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      m.name,
+                      style: TextStyle(
+                        fontSize: 12.5,
+                        fontWeight:
+                            isSelected ? FontWeight.w800 : FontWeight.w600,
+                        color: isDark
+                            ? AppColors.darkTextPrimary
+                            : AppColors.lightTextPrimary,
+                      ),
+                    ),
+                  ),
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: (isDark
+                              ? AppColors.primary
+                              : AppColors.primaryLight)
+                          .withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Text(
+                      m.formattedSize,
+                      style: TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold,
+                        color: isDark
+                            ? AppColors.primary
+                            : AppColors.primaryLight,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              subtitle: Text(
+                m.description,
+                style: TextStyle(
+                  fontSize: 11,
+                  color: isDark
+                      ? AppColors.darkTextSecondary
+                      : AppColors.lightTextSecondary,
+                ),
+              ),
+              trailing: Radio<String>(
+                value: m.id,
+                groupValue: _selectedLocalModel.id,
+                activeColor:
+                    isDark ? AppColors.primary : AppColors.primaryLight,
+                onChanged: (val) async {
+                  if (val != null) {
+                    final newModel = LocalModelInfo.getById(val)!;
+                    await widget.aiService.localModelManager
+                        .setActiveModel(val);
+                    final status = await widget.aiService.localModelManager
+                        .getModelStatus(newModel);
+                    setState(() {
+                      _selectedLocalModel = newModel;
+                      _localModelStatus = status;
+                    });
+                  }
+                },
+              ),
+              onTap: () async {
+                await widget.aiService.localModelManager.setActiveModel(m.id);
+                final status = await widget.aiService.localModelManager
+                    .getModelStatus(m);
+                setState(() {
+                  _selectedLocalModel = m;
+                  _localModelStatus = status;
+                });
+              },
+            ),
+          );
+        }),
+        const SizedBox(height: 10),
+
+        // Download Progress Bar if downloading
+        if (_localModelStatus == LocalModelStatus.downloading) ...[
+          ClipRRect(
+            borderRadius: BorderRadius.circular(8),
+            child: LinearProgressIndicator(
+              value: _downloadProgress.progress > 0
+                  ? _downloadProgress.progress
+                  : null,
+              minHeight: 8,
+              backgroundColor: isDark
+                  ? AppColors.darkBorder
+                  : AppColors.lightBorder,
+              valueColor: AlwaysStoppedAnimation<Color>(
+                isDark ? AppColors.primary : AppColors.primaryLight,
+              ),
+            ),
+          ),
+          const SizedBox(height: 6),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                '${_downloadProgress.formattedDownloaded} / ${_downloadProgress.formattedTotal}',
+                style: TextStyle(
+                  fontSize: 11,
+                  color: isDark
+                      ? AppColors.darkTextSecondary
+                      : AppColors.lightTextSecondary,
+                ),
+              ),
+              Text(
+                _downloadProgress.speedMBps > 0
+                    ? '${_downloadProgress.speedMBps.toStringAsFixed(1)} MB/s'
+                    : '',
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.bold,
+                  color: isDark
+                      ? AppColors.primary
+                      : AppColors.primaryLight,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+        ],
+
+        // Action Buttons: Download / Delete / Test
+        Row(
+          children: [
+            if (_localModelStatus != LocalModelStatus.ready &&
+                _localModelStatus != LocalModelStatus.downloading)
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: _downloadModel,
+                  icon: const Icon(Icons.download_rounded, size: 16),
+                  label: const Text('Download Model',
+                      style: TextStyle(
+                          fontSize: 12.5, fontWeight: FontWeight.bold)),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: isDark
+                        ? AppColors.primary
+                        : AppColors.primaryLight,
+                    foregroundColor:
+                        isDark ? const Color(0xFF0A0D14) : Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(AppRadii.md),
+                    ),
+                  ),
+                ),
+              ),
+            if (_localModelStatus == LocalModelStatus.downloading)
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: () {
+                    widget.aiService.localModelManager.cancelDownload();
+                    setState(() => _localModelStatus =
+                        LocalModelStatus.notDownloaded);
+                  },
+                  icon: const Icon(Icons.cancel_rounded, size: 16),
+                  label: const Text('Cancel Download'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppColors.error,
+                    side: const BorderSide(color: AppColors.error),
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                  ),
+                ),
+              ),
+            if (_localModelStatus == LocalModelStatus.ready) ...[
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: _isTestingLocalModel ? null : _testLocalModel,
+                  icon: _isTestingLocalModel
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.speed_rounded, size: 16),
+                  label: const Text('Test Local Model',
+                      style: TextStyle(
+                          fontSize: 12.5, fontWeight: FontWeight.bold)),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: isDark
+                        ? AppColors.primary
+                        : AppColors.primaryLight,
+                    foregroundColor:
+                        isDark ? const Color(0xFF0A0D14) : Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(AppRadii.md),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              OutlinedButton.icon(
+                onPressed: _deleteModel,
+                icon: const Icon(Icons.delete_outline_rounded, size: 16),
+                label: const Text('Delete'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppColors.error,
+                  side: BorderSide(
+                    color: AppColors.error.withValues(alpha: 0.5),
+                  ),
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 12, vertical: 12),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(AppRadii.md),
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+        const SizedBox(height: 16),
+
+        // Information Badges
+        Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: (isDark ? AppColors.primary : AppColors.primaryLight)
+                .withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(AppRadii.md),
+            border: Border.all(
+              color: (isDark ? AppColors.primary : AppColors.primaryLight)
+                  .withValues(alpha: 0.2),
+            ),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _buildFeatureBullet(
+                  '✓ Runs directly on this device', isDark),
+              _buildFeatureBullet(
+                  '✓ No API key or cloud tokens required (0 tokens)',
+                  isDark),
+              _buildFeatureBullet(
+                  '✓ Completely offline & private (no data leaves phone)',
+                  isDark),
+              _buildFeatureBullet(
+                  '✓ No laptop, Ollama, or local server needed', isDark),
+              _buildFeatureBullet(
+                  '✓ Calendar events, reminders & messaging supported',
+                  isDark),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildFeatureBullet(String text, bool isDark) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2.5),
+      child: Text(
+        text,
+        style: TextStyle(
+          fontSize: 11.5,
+          fontWeight: FontWeight.w600,
+          color: isDark
+              ? AppColors.darkTextPrimary
+              : AppColors.lightTextPrimary,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildScheduledRemindersCard(bool isDark) {
+    return _buildSettingsCard(
+      icon: Icons.alarm_on_rounded,
+      title: 'Scheduled Reminders & Jobs',
+      subtitle:
+          '${_scheduledJobs.where((j) => j.isActive).length} active scheduled background tasks',
+      isDark: isDark,
+      children: [
+        if (_scheduledJobs.isEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: Text(
+              'No scheduled reminders yet. Try asking: "Remind me tomorrow at 8 AM to call Naveen"',
+              style: TextStyle(
+                fontSize: 12,
+                color: isDark
+                    ? AppColors.darkTextSecondary
+                    : AppColors.lightTextSecondary,
+              ),
+            ),
+          )
+        else
+          ..._scheduledJobs.map((job) {
+            return Container(
+              margin: const EdgeInsets.only(bottom: 8),
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: isDark
+                    ? AppColors.darkSurface
+                    : AppColors.lightSurfaceHighlight,
+                borderRadius: BorderRadius.circular(AppRadii.md),
+                border: Border.all(
+                  color: job.isActive
+                      ? (isDark
+                          ? AppColors.darkBorder
+                          : AppColors.lightBorder)
+                      : (isDark
+                          ? AppColors.darkBorder.withValues(alpha: 0.5)
+                          : AppColors.lightBorder
+                              .withValues(alpha: 0.5)),
+                ),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    job.repeatType != 'none'
+                        ? Icons.repeat_rounded
+                        : Icons.alarm_rounded,
+                    size: 18,
+                    color: job.isActive
+                        ? AppColors.success
+                        : AppColors.darkTextMuted,
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          job.title,
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w700,
+                            decoration: job.isActive
+                                ? null
+                                : TextDecoration.lineThrough,
+                            color: isDark
+                                ? AppColors.darkTextPrimary
+                                : AppColors.lightTextPrimary,
+                          ),
+                        ),
+                        Text(
+                          '${job.formattedTime}${job.repeatType != 'none' ? ' • Repeats ${job.repeatType}' : ''}',
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: isDark
+                                ? AppColors.darkTextSecondary
+                                : AppColors.lightTextSecondary,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (job.isActive)
+                    IconButton(
+                      icon: const Icon(Icons.close_rounded, size: 16),
+                      tooltip: 'Cancel reminder',
+                      onPressed: () async {
+                        await ReminderSchedulerService().cancelJob(job.id);
+                        await _loadScheduledJobs();
+                      },
+                    ),
+                ],
+              ),
+            );
+          }),
+      ],
+    );
+  }
+
+  Widget _buildConfirmationPolicyCard(bool isDark) {
+    return _buildSettingsCard(
+      icon: Icons.verified_user_outlined,
+      title: 'Action Confirmation Policies',
+      subtitle: 'Configure automated actions vs user confirmation prompts',
+      isDark: isDark,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            const Text(
+              'Phone Calls',
+              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+            ),
+            DropdownButton<String>(
+              value: _callConfirmation,
+              underline: const SizedBox(),
+              items: const [
+                DropdownMenuItem(value: 'always', child: Text('Always Confirm', style: TextStyle(fontSize: 12))),
+                DropdownMenuItem(value: 'ambiguous', child: Text('Confirm Ambiguous', style: TextStyle(fontSize: 12))),
+                DropdownMenuItem(value: 'automatic', child: Text('Automatic', style: TextStyle(fontSize: 12))),
+              ],
+              onChanged: (val) {
+                if (val != null) {
+                  setState(() => _callConfirmation = val);
+                  _autoSave();
+                }
+              },
+            ),
+          ],
+        ),
+        const SizedBox(height: 6),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            const Text(
+              'Messaging',
+              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+            ),
+            DropdownButton<String>(
+              value: _messageConfirmation,
+              underline: const SizedBox(),
+              items: const [
+                DropdownMenuItem(value: 'always', child: Text('Always Confirm', style: TextStyle(fontSize: 12))),
+                DropdownMenuItem(value: 'ambiguous', child: Text('Confirm Ambiguous', style: TextStyle(fontSize: 12))),
+                DropdownMenuItem(value: 'automatic', child: Text('Automatic', style: TextStyle(fontSize: 12))),
+              ],
+              onChanged: (val) {
+                if (val != null) {
+                  setState(() => _messageConfirmation = val);
+                  _autoSave();
+                }
+              },
+            ),
+          ],
+        ),
+      ],
+    );
+  }
 }
+

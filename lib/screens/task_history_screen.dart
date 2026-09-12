@@ -286,32 +286,58 @@ class _TaskHistoryScreenState extends State<TaskHistoryScreen> {
                                           ),
                                         ),
                                         const Spacer(),
+                                        // Provider Badge (Local vs Cloud)
                                         Container(
                                           padding: const EdgeInsets.symmetric(
                                             horizontal: 8,
-                                            vertical: 2,
+                                            vertical: 2.5,
                                           ),
                                           decoration: BoxDecoration(
-                                            color: isDark
-                                                ? AppColors.darkSurface
-                                                : AppColors.lightSurfaceHighlight,
+                                            color: (task['provider'] == 'Local Navigation')
+                                                ? (isDark ? AppColors.success.withValues(alpha: 0.2) : AppColors.successContainer)
+                                                : (isDark
+                                                    ? AppColors.darkSurface
+                                                    : AppColors.lightSurfaceHighlight),
                                             borderRadius:
                                                 BorderRadius.circular(AppRadii.sm),
                                             border: Border.all(
-                                              color: isDark
-                                                  ? AppColors.darkBorder
-                                                  : AppColors.lightBorder,
+                                              color: (task['provider'] == 'Local Navigation')
+                                                  ? AppColors.success.withValues(alpha: 0.4)
+                                                  : (isDark
+                                                      ? AppColors.darkBorder
+                                                      : AppColors.lightBorder),
                                             ),
                                           ),
-                                          child: Text(
-                                            '${task['total_tokens'] ?? 0} tokens',
-                                            style: TextStyle(
-                                              fontSize: 10.5,
-                                              fontWeight: FontWeight.w700,
-                                              color: isDark
-                                                  ? AppColors.darkTextSecondary
-                                                  : AppColors.lightTextSecondary,
-                                            ),
+                                          child: Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              Icon(
+                                                (task['provider'] == 'Local Navigation')
+                                                    ? Icons.offline_bolt_rounded
+                                                    : Icons.cloud_outlined,
+                                                size: 11,
+                                                color: (task['provider'] == 'Local Navigation')
+                                                    ? AppColors.success
+                                                    : (isDark
+                                                        ? AppColors.darkTextSecondary
+                                                        : AppColors.lightTextSecondary),
+                                              ),
+                                              const SizedBox(width: 4),
+                                              Text(
+                                                (task['provider'] == 'Local Navigation')
+                                                    ? 'Local AI (0 tokens)'
+                                                    : '${task['total_tokens'] ?? 0} tokens',
+                                                style: TextStyle(
+                                                  fontSize: 10.5,
+                                                  fontWeight: FontWeight.w700,
+                                                  color: (task['provider'] == 'Local Navigation')
+                                                      ? AppColors.success
+                                                      : (isDark
+                                                          ? AppColors.darkTextSecondary
+                                                          : AppColors.lightTextSecondary),
+                                                ),
+                                              ),
+                                            ],
                                           ),
                                         ),
                                       ],

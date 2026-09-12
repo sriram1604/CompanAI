@@ -9,19 +9,27 @@ class TaskHistoryLogger {
   }
 
   /// Appends a task execution record to the history file
-  static Future<void> logTask(String goal, String status, int totalTokens, int steps, List<String> trace) async {
+  static Future<void> logTask(
+    String goal,
+    String status,
+    int totalTokens,
+    int steps,
+    List<String> trace, {
+    String provider = 'Cloud API',
+  }) async {
     try {
       final file = await _localFile;
-      
+
       final data = {
         "goal": goal.trim(),
         "status": status, // "Success", "Failed", "Cancelled"
         "total_tokens": totalTokens,
         "steps_taken": steps,
         "trace": trace,
+        "provider": provider,
         "timestamp": DateTime.now().toIso8601String(),
       };
-      
+
       await file.writeAsString('${jsonEncode(data)}\n', mode: FileMode.append);
     } catch (e) {
       print('Failed to write task history: $e');

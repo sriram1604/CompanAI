@@ -12,7 +12,7 @@ class AgentAction {
   factory AgentAction.fromJson(Map<String, dynamic> json) {
     return AgentAction(
       action: json['action'] as String? ?? 'general_query',
-      params: json['params'] as Map<String, dynamic>? ?? {},
+      params: json['params'] is Map ? Map<String, dynamic>.from(json['params'] as Map) : {},
       response: json['response'] as String? ?? '',
     );
   }
@@ -28,6 +28,15 @@ class AgentAction {
     'read_notifications',
     'read_screen',
     'run_adb_command',
+    'create_calendar_event',
+    'set_reminder',
+    'schedule_job',
+    'send_message',
+    'search',
+    'search_product',
+    'compare_products',
+    'execute_task',
+    'ask_user',
     'general_query',
   ];
 }

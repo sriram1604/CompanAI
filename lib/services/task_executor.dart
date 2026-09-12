@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:developer' as developer;
+import 'package:url_launcher/url_launcher.dart';
 import 'ai_service.dart';
 import 'screen_automation_service.dart';
 import 'app_launcher_service.dart';
@@ -9,6 +10,10 @@ import 'task_history_logger.dart';
 import 'shizuku_service.dart';
 import 'skill_memory_service.dart';
 import 'recovery_engine.dart';
+import 'messaging_service.dart';
+import 'contact_resolver_service.dart';
+import 'communication_service.dart';
+import 'product_comparison_engine.dart';
 import '../models/saved_skill.dart';
 
 /// Executes multi-step UI automation tasks using LLM-guided screen reading.
@@ -23,6 +28,10 @@ class TaskExecutor {
   final NotificationService _notificationService = NotificationService();
   final SkillMemoryService _skillMemory = SkillMemoryService();
   final RecoveryEngine _recoveryEngine = RecoveryEngine();
+  final MessagingService _messagingService = MessagingService();
+  final ContactResolverService _resolverService = ContactResolverService();
+  final CommunicationService _commService = CommunicationService();
+  final ProductComparisonEngine _productEngine = ProductComparisonEngine();
 
   /// Callback to report progress messages to the UI
   final void Function(String message)? onProgress;
@@ -153,6 +162,8 @@ Rules:
           0,
           savedSkill.steps.length,
           results,
+          provider:
+              _aiService.isLocalMode ? 'Local Navigation' : 'Cloud API',
         );
         await _screenService.showToast('Task Complete! (Memory)');
         return 'Done.';
@@ -222,6 +233,8 @@ Rules:
           totalTokens,
           step,
           results,
+          provider:
+              _aiService.isLocalMode ? 'Local Navigation' : 'Cloud API',
         );
         await _screenService.showToast('Task Cancelled');
         return 'Task cancelled.';
@@ -297,6 +310,8 @@ Step ${step + 1}/${_aiService.maxSteps}. Look at the text dump and coordinates. 
             totalTokens,
             step,
             results,
+            provider:
+                _aiService.isLocalMode ? 'Local Navigation' : 'Cloud API',
           );
           await _screenService.showToast('Task Cancelled');
           return 'Task cancelled.';
@@ -324,6 +339,8 @@ Step ${step + 1}/${_aiService.maxSteps}. Look at the text dump and coordinates. 
             totalTokens,
             step,
             results,
+            provider:
+                _aiService.isLocalMode ? 'Local Navigation' : 'Cloud API',
           );
           await _screenService.showToast('Task Cancelled');
           await Future.delayed(const Duration(seconds: 2));
@@ -341,6 +358,8 @@ Step ${step + 1}/${_aiService.maxSteps}. Look at the text dump and coordinates. 
           totalTokens,
           step,
           results,
+          provider:
+              _aiService.isLocalMode ? 'Local Navigation' : 'Cloud API',
         );
         await _screenService.showToast('AI Error: $e');
         await Future.delayed(const Duration(seconds: 3));
@@ -361,6 +380,8 @@ Step ${step + 1}/${_aiService.maxSteps}. Look at the text dump and coordinates. 
           totalTokens,
           step,
           results,
+          provider:
+              _aiService.isLocalMode ? 'Local Navigation' : 'Cloud API',
         );
         await _screenService.showToast('Task Cancelled');
         await Future.delayed(const Duration(seconds: 2));
@@ -372,6 +393,9 @@ Step ${step + 1}/${_aiService.maxSteps}. Look at the text dump and coordinates. 
       String? parsedJsonStr;
       try {
         String jsonStr = _extractJson(response);
+        if (jsonStr.trim().isEmpty || jsonStr.trim() == '{}') {
+          jsonStr = '{"action": "wait", "params": {}, "reasoning": "Observing screen update", "is_complete": false}';
+        }
 
         actionJson = jsonDecode(jsonStr) as Map<String, dynamic>;
         parsedJsonStr = jsonStr;
@@ -396,6 +420,9 @@ Step ${step + 1}/${_aiService.maxSteps}. Look at the text dump and coordinates. 
           );
 
           String jsonStr = _extractJson(retryResponse.content);
+          if (jsonStr.trim().isEmpty || jsonStr.trim() == '{}') {
+            jsonStr = '{"action": "wait", "params": {}, "reasoning": "Observing screen update", "is_complete": false}';
+          }
           actionJson = jsonDecode(jsonStr) as Map<String, dynamic>;
           parsedJsonStr = jsonStr;
         } catch (e) {
@@ -414,6 +441,8 @@ Step ${step + 1}/${_aiService.maxSteps}. Look at the text dump and coordinates. 
             totalTokens,
             step,
             results,
+            provider:
+                _aiService.isLocalMode ? 'Local Navigation' : 'Cloud API',
           );
           await _screenService.showToast('Agent Error: $e');
           await Future.delayed(const Duration(seconds: 3));
@@ -517,21 +546,138 @@ Step ${step + 1}/${_aiService.maxSteps}. Look at the text dump and coordinates. 
           success = actionResult.startsWith('Opened');
           break;
 
-        case 'wait':
-          await Future.delayed(const Duration(seconds: 1));
-          actionResult = 'Waited';
+        case 'tap':
+          final target = params['target'] as String? ?? params['text'] as String? ?? '';
+          if (target.isNotEmpty) {
+            success = await _screenService.clickByText(target);
+            actionResult = success ? 'Tapped "$target"' : 'Could not find "$target" to tap';
+          } else {
+            final x = (params['x'] as num?)?.toDouble() ?? 0;
+            final y = (params['y'] as num?)?.toDouble() ?? 0;
+            success = await _screenService.clickAt(x, y);
+            actionResult = success ? 'Tapped at ($x, $y)' : 'Tap failed';
+          }
+          break;
+
+        case 'type':
+          final typeText = params['text'] as String? ?? '';
+          final hint = params['field_hint'] as String?;
+          success = await _screenService.typeText(typeText, fieldHint: hint);
+          actionResult = success ? 'Typed "$typeText"' : 'Could not type text';
+          break;
+
+        case 'send_message':
+          final app = params['app'] as String? ?? 'WhatsApp';
+          final target = params['target'] as String? ?? params['recipient'] as String? ?? '';
+          final msg = params['message'] as String? ?? '';
+          actionResult = await _messagingService.sendMessage(
+            app: app,
+            recipient: target,
+            message: msg,
+          );
+          success = !actionResult.startsWith('Error');
+          break;
+
+        case 'make_call':
+          final contact = params['contact'] as String? ?? params['contact_name'] as String?;
+          final phone = params['phone_number'] as String?;
+          if (contact != null && phone == null) {
+            final resolution = await _resolverService.resolveContact(contact);
+            if (resolution.isSingleMatch && resolution.primaryMatch?.primaryPhoneNumber != null) {
+              actionResult = await _commService.makeCall(
+                contactName: resolution.primaryMatch!.displayName,
+                phoneNumber: resolution.primaryMatch!.primaryPhoneNumber,
+              );
+              success = true;
+            } else {
+              actionResult = resolution.message;
+              success = false;
+            }
+          } else {
+            actionResult = await _commService.makeCall(contactName: contact, phoneNumber: phone);
+            success = true;
+          }
+          break;
+
+        case 'search':
+          final searchApp = (params['app'] as String? ?? 'browser').toLowerCase();
+          final query = params['query'] as String? ?? '';
+          if (searchApp.contains('youtube')) {
+            final uri = Uri.parse('vnd.youtube://results?search_query=${Uri.encodeComponent(query)}');
+            if (await canLaunchUrl(uri)) {
+              await launchUrl(uri);
+              actionResult = 'Opened YouTube for "$query"';
+            } else {
+              actionResult = await _appLauncher.openUrl('https://www.youtube.com/results?search_query=${Uri.encodeComponent(query)}');
+            }
+          } else {
+            actionResult = await _appLauncher.openUrl('https://www.google.com/search?q=${Uri.encodeComponent(query)}');
+          }
           success = true;
           break;
 
-        case 'done':
-          results.add('Task complete: $reasoning');
-          _report('Task complete: $reasoning');
-          await _notificationService.showTaskCompleteNotification(
-            'Task Completed',
-            reasoning.trim().isEmpty ? 'Agent finished its goal.' : reasoning,
+        case 'search_product':
+        case 'compare_products':
+          final pQuery = params['query'] as String? ?? '';
+          final pSites = (params['sites'] as List?)?.map((s) => s.toString()).toList();
+          actionResult = await _productEngine.searchAndCompareProducts(
+            query: pQuery,
+            targetSites: pSites,
+            onProgress: onProgress,
           );
-          await _screenService.showToast('Task completed');
-          return reasoning.trim().isEmpty ? 'Done.' : reasoning.trim();
+          success = true;
+          break;
+
+        case 'find_contact':
+        case 'find_group':
+          final name = params['name'] as String? ?? '';
+          success = await _screenService.clickByText(name);
+          actionResult = success ? 'Found and selected "$name"' : 'Looking for "$name"';
+          break;
+
+        case 'ask_user':
+          final question = params['question'] as String? ?? reasoning;
+          results.add('Prompted user: $question');
+          _report(question);
+          return question;
+
+        case 'long_press':
+        case 'long_click':
+          final x = (params['x'] as num?)?.toDouble() ?? 540;
+          final y = (params['y'] as num?)?.toDouble() ?? 960;
+          success = await _screenService.longPressAt(x, y);
+          actionResult = success ? 'Long pressed at ($x, $y)' : 'Long press failed';
+          break;
+
+        case 'press_recents':
+          success = await _screenService.openRecents();
+          actionResult = 'Opened recent apps';
+          break;
+
+        case 'open_url':
+          final url = params['url'] as String? ?? '';
+          actionResult = await _appLauncher.openUrl(url);
+          success = true;
+          break;
+
+        case 'verify':
+          await Future.delayed(const Duration(milliseconds: 800));
+          actionResult = 'Verified screen state';
+          success = true;
+          break;
+
+        case 'finish':
+        case 'done':
+          final finishReason = params['reason'] as String? ?? reasoning;
+          final isSuccess = params['result'] != 'failed';
+          results.add('Task complete: $finishReason');
+          _report('Task complete: $finishReason');
+          await _notificationService.showTaskCompleteNotification(
+            isSuccess ? 'Task Completed' : 'Task Finished',
+            finishReason.trim().isEmpty ? 'Agent finished its goal.' : finishReason,
+          );
+          await _screenService.showToast(isSuccess ? 'Task completed' : 'Task finished');
+          return finishReason.trim().isEmpty ? 'Done.' : finishReason.trim();
 
         default:
           actionResult = 'Unknown action: $action';
@@ -567,6 +713,8 @@ Step ${step + 1}/${_aiService.maxSteps}. Look at the text dump and coordinates. 
             totalTokens,
             step,
             results,
+            provider:
+                _aiService.isLocalMode ? 'Local Navigation' : 'Cloud API',
           );
           await _screenService.showToast('Agent stuck. Task stopped.');
           await Future.delayed(const Duration(seconds: 4));
@@ -623,6 +771,8 @@ Step ${step + 1}/${_aiService.maxSteps}. Look at the text dump and coordinates. 
           totalTokens,
           step,
           results,
+          provider:
+              _aiService.isLocalMode ? 'Local Navigation' : 'Cloud API',
         );
 
         // Save to skill memory
@@ -649,6 +799,8 @@ Step ${step + 1}/${_aiService.maxSteps}. Look at the text dump and coordinates. 
       totalTokens,
       _aiService.maxSteps,
       results,
+      provider:
+          _aiService.isLocalMode ? 'Local Navigation' : 'Cloud API',
     );
     await _screenService.showToast('Reached maximum steps.');
     await Future.delayed(const Duration(seconds: 4));

@@ -6,6 +6,7 @@ import 'config/feature_flags.dart';
 import 'screens/home_screen.dart';
 import 'screens/onboarding_screen.dart';
 import 'overlay_main.dart';
+import 'services/reminder_scheduler_service.dart';
 import 'theme/app_theme.dart';
 
 @pragma("vm:entry-point")
@@ -65,6 +66,9 @@ void main() async {
   }
 
   final onboardingCompleted = prefs.getBool('onboarding_completed') ?? false;
+
+  // Initialize offline reminder & scheduled task service
+  await ReminderSchedulerService.instance.initialize();
 
   runApp(PrivateAgentApp(onboardingCompleted: onboardingCompleted));
 }

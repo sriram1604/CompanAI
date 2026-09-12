@@ -3,6 +3,15 @@ import 'dart:developer' as developer;
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/agent_action.dart';
+import 'local_ai/local_model_info.dart';
+import 'local_ai/local_model_manager.dart';
+import 'local_ai/local_inference_engine.dart';
+import 'local_ai/local_task_planner.dart';
+
+enum AiMode {
+  cloud,
+  local,
+}
 
 class AiResponse {
   final String content;
@@ -47,6 +56,11 @@ class AiService {
         .where(availableModels.contains)
         .toList(growable: false);
   }
+
+  AiMode _mode = AiMode.cloud;
+  final LocalTaskPlanner _localPlanner = LocalTaskPlanner();
+  final LocalInferenceEngine _localEngine = LocalInferenceEngine();
+  final LocalModelManager _localModelManager = LocalModelManager();
 
   String? _apiKey;
   String _baseUrl = _defaultBaseUrl;
@@ -107,6 +121,9 @@ Answer questions, explain concepts, brainstorm, write emails/messages, and chat 
 
   Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
+    final modeStr = prefs.getString('ai_mode') ?? 'cloud';
+    _mode = modeStr == 'local' ? AiMode.local : AiMode.cloud;
+
     _apiKey = prefs.getString('api_key');
     _baseUrl = prefs.getString('api_base_url') ?? _defaultBaseUrl;
     _model = prefs.getString('api_model') ?? _defaultModel;
@@ -116,6 +133,19 @@ Answer questions, explain concepts, brainstorm, write emails/messages, and chat 
     _maxTokens = prefs.getInt('api_max_tokens') ?? 1024;
     _useScreenCompression = prefs.getBool('api_use_screen_compression') ?? true;
     _useSystemPrompt = prefs.getBool('api_use_system_prompt') ?? true;
+  }
+
+  AiMode get mode => _mode;
+  bool get isLocalMode => _mode == AiMode.local;
+  bool get isCloudMode => _mode == AiMode.cloud;
+  LocalModelManager get localModelManager => _localModelManager;
+  LocalInferenceEngine get localEngine => _localEngine;
+  LocalTaskPlanner get localPlanner => _localPlanner;
+
+  Future<void> setMode(AiMode newMode) async {
+    _mode = newMode;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('ai_mode', newMode.name);
   }
 
   Future<void> saveSettings({
@@ -173,7 +203,10 @@ Answer questions, explain concepts, brainstorm, write emails/messages, and chat 
     await prefs.setBool('api_use_system_prompt', useSystemPrompt);
   }
 
-  bool get isConfigured => _apiKey != null && _apiKey!.isNotEmpty;
+  bool get isConfigured {
+    if (isLocalMode) return true;
+    return _apiKey != null && _apiKey!.isNotEmpty;
+  }
   String get baseUrl => _baseUrl;
   String get model => _model;
   String get apiKey => _apiKey ?? '';
@@ -209,6 +242,21 @@ Answer questions, explain concepts, brainstorm, write emails/messages, and chat 
 
   /// Send a message to the AI and get a response.
   Future<String> sendMessage(String message, {bool isAgentMode = true}) async {
+    if (isLocalMode) {
+      final action = await _localPlanner.planUserCommand(message);
+      if (action.action == 'general_query') {
+        _conversationHistory.add({'role': 'assistant', 'content': action.response});
+        return action.response;
+      }
+      final jsonResponse = jsonEncode({
+        'action': action.action,
+        'params': action.params,
+        'response': action.response,
+      });
+      _conversationHistory.add({'role': 'assistant', 'content': jsonResponse});
+      return jsonResponse;
+    }
+
     if (_apiKey == null || _apiKey!.isEmpty) {
       throw Exception('API Key is not configured. Please go to Settings.');
     }
@@ -324,6 +372,29 @@ Answer questions, explain concepts, brainstorm, write emails/messages, and chat 
     String message, {
     bool isAgentMode = true,
   }) async* {
+    if (isLocalMode) {
+      final action = await _localPlanner.planUserCommand(message);
+      if (action.action == 'general_query') {
+        _conversationHistory
+            .add({'role': 'assistant', 'content': action.response});
+        final words = action.response.split(' ');
+        for (int i = 0; i < words.length; i++) {
+          yield i == words.length - 1 ? words[i] : '${words[i]} ';
+          await Future.delayed(const Duration(milliseconds: 15));
+        }
+        return;
+      }
+      final jsonResponse = jsonEncode({
+        'action': action.action,
+        'params': action.params,
+        'response': action.response,
+      });
+      _conversationHistory
+          .add({'role': 'assistant', 'content': jsonResponse});
+      yield jsonResponse;
+      return;
+    }
+
     if (_apiKey == null || _apiKey!.isEmpty) {
       throw Exception('API Key is not configured. Please go to Settings.');
     }
@@ -470,6 +541,12 @@ Answer questions, explain concepts, brainstorm, write emails/messages, and chat 
   /// Send a task execution message — no conversation history, low temperature, limited tokens.
   /// This is much faster and cheaper than sendMessage.
   Future<AiResponse> sendTaskMessage(String systemPrompt, String prompt) async {
+    if (isLocalMode) {
+      final actionMap = await _localPlanner.decideNextStepFromPrompt(prompt);
+      final jsonStr = jsonEncode(actionMap);
+      return AiResponse(jsonStr, 0); // 0 Cloud tokens in Local Mode
+    }
+
     if (_apiKey == null || _apiKey!.isEmpty) {
       throw Exception('API Key is not configured. Please go to Settings.');
     }
